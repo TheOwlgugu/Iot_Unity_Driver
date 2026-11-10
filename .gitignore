@@ -97,3 +97,8 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+
+# 本地网络配置（含服务器地址和 token）
+Assets/STM32/Resources/network.json
+Assets/STM32/Resources/network.json.meta

@@ -1,20 +1,28 @@
-using UnityEngine;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using UnityEngine;
 
+/// <summary>
+/// 数据层：接收 WebSocketClient 收到的 JSON，解析成统一 Reading，按 (设备号, 类型) 保存最新值。
+/// 只保留最新值，历史数据请走中间层 HTTP 接口。
+///
+/// 业务代码只用这三个接口：
+///   DataProcessor.GetDeviceIds()                 有哪些设备
+///   DataProcessor.TryGetValue(id, type, out v)   某设备某类型的最新值
+///   DataProcessor.Clear()                        清缓存
+/// </summary>
 public class DataProcessor : MonoBehaviour
 {
-    public class DeviceInfo
-    {
-        public int id;
-        public int light;
-        public float temperature;
-        public float lastUpdateTime;
-        public bool isOnline = true;
-    }
+    /// <summary>是否在 Console 打印每条读数（调试用，上线可置 false）</summary>
+    public static bool LogReadings = true;
 
-    private static Dictionary<int, DeviceInfo> devices = new Dictionary<int, DeviceInfo>();
-    private static ConcurrentQueue<string> jsonQueue = new ConcurrentQueue<string>();
+    /// <summary>是否已连上中间层（UI 显示在线状态用）</summary>
+    public static bool IsConnected { get; private set; }
+
+    private static readonly ConcurrentQueue<string> jsonQueue = new ConcurrentQueue<string>();
+    private static readonly Dictionary<long, Reading> latest = new Dictionary<long, Reading>();
+    private static readonly Dictionary<long, float> lastArrival = new Dictionary<long, float>();
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void AutoCreate()
@@ -24,11 +32,21 @@ public class DataProcessor : MonoBehaviour
         DontDestroyOnLoad(go);
     }
 
-    // WebSocket 收到消息时调这个
+    /* ==================== 以下两个由 WebSocketClient 调用，业务代码不需要用 ==================== */
+
     public static void EnqueueRawMessage(string json)
     {
-        jsonQueue.Enqueue(json);
+        if (!string.IsNullOrEmpty(json)) jsonQueue.Enqueue(json);
     }
+
+    public static void SetConnected(bool connected)
+    {
+        if (IsConnected == connected) return;
+        IsConnected = connected;
+        Debug.Log("[DataProcessor] 连接状态: " + (connected ? "已连接" : "已断开"));
+    }
+
+    /* ==================== 内部：解析与缓存 ==================== */
 
     void Update()
     {
@@ -38,64 +56,102 @@ public class DataProcessor : MonoBehaviour
         }
     }
 
-    private void ProcessJson(string json)
+    private static long SlotKey(int deviceId, int dataType)
     {
+        return ((long)deviceId << 32) | (uint)dataType;
+    }
+
+    private static void ProcessJson(string json)
+    {
+        Reading r;
         try
         {
-            // 简单 JSON 解析（避免依赖第三方库）
-            // 格式：{"deviceId":7,"lightState":0,"temperature":22.56,"timestamp":...}
-            int deviceId = ExtractInt(json, "deviceId");
-            int lightState = ExtractInt(json, "lightState");
-            float temperature = ExtractFloat(json, "temperature");
-
-            if (!devices.ContainsKey(deviceId))
-                devices[deviceId] = new DeviceInfo { id = deviceId };
-
-            devices[deviceId].light = lightState;
-            devices[deviceId].temperature = temperature;
-            devices[deviceId].lastUpdateTime = Time.time;
-            devices[deviceId].isOnline = true;
-
-            Debug.Log($"设备 {deviceId:D2}：灯光 {(lightState == 0 ? "亮" : "暗")}，温度 {temperature:F2}℃");
+            r = JsonUtility.FromJson<Reading>(json);
         }
-        catch (System.Exception e)
+        catch (Exception e)
         {
-            Debug.LogError("JSON解析失败: " + e.Message);
+            Debug.LogError("[DataProcessor] JSON 解析失败: " + e.Message + " | " + json);
+            return;
         }
+
+        if (r.deviceId <= 0 || !SensorMeta.IsKnown(r.dataType))
+        {
+            Debug.LogWarning("[DataProcessor] 未知设备号或类型，丢弃: " + json);
+            return;
+        }
+
+        // 中间层已经带了 key/unit；缺失时用本地表补齐
+        if (string.IsNullOrEmpty(r.key))  r.key  = SensorMeta.KeyOf(r.dataType);
+        if (string.IsNullOrEmpty(r.unit)) r.unit = SensorMeta.UnitOf(r.dataType);
+
+        long slot = SlotKey(r.deviceId, r.dataType);
+        float now = Time.unscaledTime;
+
+        if (LogReadings)
+        {
+            float gap = -1f;
+            float prev;
+            if (lastArrival.TryGetValue(slot, out prev)) gap = now - prev;
+
+            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            double latency = (nowMs - r.timestamp) / 1000.0;
+
+            string decimals = "F" + SensorMeta.DecimalsOf(r.dataType);
+            string gapText = gap >= 0f ? gap.ToString("F1") + "s" : "首次";
+            Debug.Log("[DATA] 设备" + r.deviceId
+                    + " " + SensorMeta.NameOf(r.dataType)
+                    + " " + r.value.ToString(decimals) + r.unit
+                    + " | 间隔 " + gapText
+                    + " | 延迟 " + latency.ToString("F2") + "s"
+                    + " | " + r.source);
+        }
+
+        lastArrival[slot] = now;
+        latest[slot] = r;
     }
 
-    private int ExtractInt(string json, string key)
+    /* ==================== 对外接口（业务只用这三个） ==================== */
+
+    /// <summary>当前有数据的设备号列表（每次调用会分配一个新 List）</summary>
+    public static List<int> GetDeviceIds()
     {
-        string pattern = $"\"{key}\":";
-        int idx = json.IndexOf(pattern);
-        if (idx < 0) return 0;
-        idx += pattern.Length;
-        int end = json.IndexOfAny(new char[] { ',', '}' }, idx);
-        return int.Parse(json.Substring(idx, end - idx));
+        var ids = new List<int>();
+        GetDeviceIds(ids);
+        return ids;
     }
 
-    private float ExtractFloat(string json, string key)
+    /// <summary>同上，但填进你传入的 List（高频调用用这个，不产生 GC 垃圾）</summary>
+    public static void GetDeviceIds(List<int> buffer)
     {
-        string pattern = $"\"{key}\":";
-        int idx = json.IndexOf(pattern);
-        if (idx < 0) return 0f;
-        idx += pattern.Length;
-        int end = json.IndexOfAny(new char[] { ',', '}' }, idx);
-        return float.Parse(json.Substring(idx, end - idx));
+        if (buffer == null) return;
+
+        buffer.Clear();
+        foreach (var kv in latest)
+        {
+            int id = (int)(kv.Key >> 32);
+            if (!buffer.Contains(id)) buffer.Add(id);
+        }
+        buffer.Sort();
     }
 
-    // ---------- 外部查询接口 ----------
-    public static float GetTemperature(int id)
-        => devices.TryGetValue(id, out var info) ? info.temperature : 0f;
+    /// <summary>取某设备某传感器类型的最新值；没收到过返回 false</summary>
+    public static bool TryGetValue(int deviceId, int dataType, out float value)
+    {
+        Reading r;
+        if (latest.TryGetValue(SlotKey(deviceId, dataType), out r))
+        {
+            value = r.value;
+            return true;
+        }
 
-    public static int GetLight(int id)
-        => devices.TryGetValue(id, out var info) ? info.light : -1;
+        value = 0f;
+        return false;
+    }
 
-    public static DeviceInfo GetDeviceInfo(int id)
-        => devices.TryGetValue(id, out var info) ? info : null;
-
-    public static IEnumerable<int> GetAllDeviceIds() => devices.Keys;
-
-    public static bool IsOnline(int id)
-        => devices.TryGetValue(id, out var info) && info.isOnline;
+    /// <summary>清空所有缓存（切场景/调试用）</summary>
+    public static void Clear()
+    {
+        latest.Clear();
+        lastArrival.Clear();
+    }
 }
