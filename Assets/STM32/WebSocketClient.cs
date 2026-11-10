@@ -210,6 +210,12 @@ public class WebSocketClient : MonoBehaviour
                 return;
             }
 
+            if (env.kind == "queryResult")
+            {
+                DataBase.HandleResult(json);
+                return;
+            }
+
             DataProcessor.EnqueueRawMessage(json);
         };
 
