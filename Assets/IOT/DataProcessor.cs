@@ -15,7 +15,7 @@ using UnityEngine;
 public class DataProcessor : MonoBehaviour
 {
     /// <summary>是否在 Console 打印每条读数（调试用，上线可置 false）</summary>
-    public static bool LogReadings = true;
+    public static bool LogReadings = false;
 
     /// <summary>是否已连上中间层（UI 显示在线状态用）</summary>
     public static bool IsConnected { get; private set; }
@@ -76,7 +76,8 @@ public class DataProcessor : MonoBehaviour
 
         if (r.deviceId <= 0 || !SensorMeta.IsKnown(r.dataType))
         {
-            Debug.LogWarning("[DataProcessor] 未知设备号或类型，丢弃: " + json);
+            if (LogReadings)
+                Debug.LogWarning("[DataProcessor] 未知设备号或类型，丢弃");
             return;
         }
 

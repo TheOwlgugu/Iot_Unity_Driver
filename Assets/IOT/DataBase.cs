@@ -35,16 +35,20 @@ public class QueryResult
 /// <summary>
 /// 数据库查询驱动：只负责通过 WebSocket 和中间层通信。
 /// 查询名和参数由中间层白名单定义，客户端不能发 SQL。
+///
+/// 业务代码只用最下面的三个方法：
+///   DataBase.GetLatest(deviceId, dataType, limit)
+///   DataBase.GetStatus(deviceId)
+///   DataBase.GetHistory(deviceId, dataType, start, end)
 /// </summary>
 public static class DataBase
 {
     private static readonly Dictionary<string, TaskCompletionSource<QueryResult>> pending =
         new Dictionary<string, TaskCompletionSource<QueryResult>>();
 
-    /// <summary>最近一次 GetHistory 是否被 5000 行上限截断</summary>
-    public static bool LastHistoryTruncated { get; private set; }
+    /* ==================== 内部实现（业务代码不需要看） ==================== */
 
-    /// <summary>WebSocketClient 收到 queryResult 时调用</summary>
+    /// <summary>由 WebSocketClient 调用，业务代码不需要用</summary>
     public static void HandleResult(string json)
     {
         QueryResult res;
@@ -65,48 +69,6 @@ public static class DataBase
             pending.Remove(res.requestId);
             tcs.TrySetResult(res);
         }
-    }
-
-    /// <summary>最新 N 条（按时间倒序）</summary>
-    public static Task<DBdata[]> GetLatest(int deviceId, int dataType, int limit)
-    {
-        string p = $"{{\"deviceId\":{deviceId},\"dataType\":{dataType},\"limit\":{limit}}}";
-        return SendItems("latest", p);
-    }
-
-    /// <summary>true=在线；false=离线或没有状态记录</summary>
-    public static async Task<bool> GetStatus(int deviceId)
-    {
-        string p = $"{{\"deviceId\":{deviceId}}}";
-        QueryResult res = await Send("status", p);
-        return res.ok && res.online;
-    }
-
-    /// <summary>时间范围内（升序），最多 5000 行</summary>
-    public static Task<DBdata[]> GetHistory(int deviceId, int dataType, DateTime start, DateTime end)
-    {
-        return GetHistoryByMs(deviceId, dataType, ToMs(start), ToMs(end));
-    }
-
-    /// <summary>时间范围（字符串格式 yyyy-MM-dd HH:mm:ss）</summary>
-    public static Task<DBdata[]> GetHistory(int deviceId, int dataType, string start, string end)
-    {
-        return GetHistoryByMs(deviceId, dataType, ToMs(ParseTime(start)), ToMs(ParseTime(end)));
-    }
-
-    private static Task<DBdata[]> GetHistoryByMs(int deviceId, int dataType, long startMs, long endMs)
-    {
-        string p = $"{{\"deviceId\":{deviceId},\"dataType\":{dataType},\"start\":{startMs},\"end\":{endMs}}}";
-
-        return SendItems("history", p, res => LastHistoryTruncated = res.truncated);
-    }
-
-    private static async Task<DBdata[]> SendItems(string name, string paramsJson,
-                                                   Action<QueryResult> onResult = null)
-    {
-        QueryResult res = await Send(name, paramsJson);
-        onResult?.Invoke(res);
-        return res.items ?? Array.Empty<DBdata>();
     }
 
     private static async Task<QueryResult> Send(string name, string paramsJson, int timeoutMs = 5000)
@@ -141,6 +103,21 @@ public static class DataBase
         return res;
     }
 
+    private static async Task<DBdata[]> SendItems(string name, string paramsJson,
+                                                   Action<QueryResult> onResult = null)
+    {
+        QueryResult res = await Send(name, paramsJson);
+        onResult?.Invoke(res);
+        return res.items ?? Array.Empty<DBdata>();
+    }
+
+    private static Task<DBdata[]> GetHistoryByMs(int deviceId, int dataType, long startMs, long endMs)
+    {
+        string p = $"{{\"deviceId\":{deviceId},\"dataType\":{dataType},\"start\":{startMs},\"end\":{endMs}}}";
+
+        return SendItems("history", p, res => LastHistoryTruncated = res.truncated);
+    }
+
     private static long ToMs(DateTime dt)
     {
         if (dt.Kind == DateTimeKind.Unspecified)
@@ -153,5 +130,37 @@ public static class DataBase
     {
         return DateTime.ParseExact(s, "yyyy-MM-dd HH:mm:ss",
             CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal);
+    }
+
+    /* ==================== 对外接口（业务只用这三个） ==================== */
+
+    /// <summary>最近一次 GetHistory 是否被 5000 行上限截断</summary>
+    public static bool LastHistoryTruncated { get; private set; }
+
+    /// <summary>最新 N 条（按时间倒序）</summary>
+    public static Task<DBdata[]> GetLatest(int deviceId, int dataType, int limit)
+    {
+        string p = $"{{\"deviceId\":{deviceId},\"dataType\":{dataType},\"limit\":{limit}}}";
+        return SendItems("latest", p);
+    }
+
+    /// <summary>true=在线；false=离线或没有状态记录</summary>
+    public static async Task<bool> GetStatus(int deviceId)
+    {
+        string p = $"{{\"deviceId\":{deviceId}}}";
+        QueryResult res = await Send("status", p);
+        return res.ok && res.online;
+    }
+
+    /// <summary>时间范围内（升序），最多 5000 行</summary>
+    public static Task<DBdata[]> GetHistory(int deviceId, int dataType, DateTime start, DateTime end)
+    {
+        return GetHistoryByMs(deviceId, dataType, ToMs(start), ToMs(end));
+    }
+
+    /// <summary>时间范围（字符串格式 yyyy-MM-dd HH:mm:ss）</summary>
+    public static Task<DBdata[]> GetHistory(int deviceId, int dataType, string start, string end)
+    {
+        return GetHistoryByMs(deviceId, dataType, ToMs(ParseTime(start)), ToMs(ParseTime(end)));
     }
 }

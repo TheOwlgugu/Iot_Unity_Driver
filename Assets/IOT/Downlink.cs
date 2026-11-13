@@ -1,7 +1,7 @@
-using System;
+ï»¿using System;
 using UnityEngine;
 
-/// <summary>ÖĞ¼ä²ã·µ»ØµÄÏÂĞĞ»ØÖ´</summary>
+/// <summary>ä¸­é—´å±‚è¿”å›çš„ä¸‹è¡Œå›æ‰§</summary>
 [Serializable]
 public struct DownlinkAck
 {
@@ -9,10 +9,10 @@ public struct DownlinkAck
     public string requestId;
     public bool   ok;
     public string route;     // "wifi" / "lora"
-    public string error;     // ok=false Ê±²ÅÓĞ
+    public string error;     // ok=false æ—¶æ‰æœ‰
 }
 
-/// <summary>WebSocket ±¨ÎÄĞÅ·â£¬ÓÃÀ´Çø·Ö"¶ÁÊı"ºÍ"ÏÂĞĞ ack"</summary>
+/// <summary>WebSocket æŠ¥æ–‡ä¿¡å°ï¼Œç”¨æ¥åŒºåˆ†"è¯»æ•°"å’Œ"ä¸‹è¡Œ ack"</summary>
 [Serializable]
 public struct WsEnvelope
 {
@@ -20,42 +20,68 @@ public struct WsEnvelope
 }
 
 /// <summary>
-/// ÏÂĞĞ¿ØÖÆ£ºÖ»¸ºÔğ°Ñ (Éè±¸ºÅ, ½Ó¿Ú, Ö¸Áî) ·¢¸øÖĞ¼ä²ã¡£
-/// ÖĞ¼ä²ã¸ºÔğÂ·ÓÉµ½ WiFi/LoRa£¬Éè±¸Ö´ĞĞ½á¹û²»×öÈ·ÈÏ£¨·½°¸ A£©¡£
+/// ä¸‹è¡Œæ§åˆ¶ï¼šåªè´Ÿè´£æŠŠ (è®¾å¤‡å·, æ¥å£, æŒ‡ä»¤) å‘ç»™ä¸­é—´å±‚ã€‚
+/// ä¸­é—´å±‚è´Ÿè´£è·¯ç”±åˆ° WiFi/LoRaï¼Œè®¾å¤‡æ‰§è¡Œç»“æœä¸åšç¡®è®¤ï¼ˆæ–¹æ¡ˆ Aï¼‰ã€‚
 ///
-/// ÓÃ·¨£º
-///   Downlink.SendCode(2, 1, 1);   // Éè±¸ 2£¬½Ó¿Ú 1£¬Ö¸Áî 01
-///   Downlink.OnAck += a => Debug.Log(a.ok ? "ÒÑ·¢ËÍ" : a.error);
+/// ä¸šåŠ¡ä»£ç åªç”¨æœ€ä¸‹é¢çš„ä¸¤ä¸ªæ¥å£ï¼š
+///   Downlink.SendCode(deviceId, port, code)
+///   Downlink.OnAck += a => ...
 /// </summary>
 public static class Downlink
 {
     private static int nextRequestId = 1;
 
-    /// <summary>ÖĞ¼ä²ã»ØÖ´£¨ÒÑÂ·ÓÉ / Éè±¸ÀëÏß / ²ÎÊı´íÎó£©</summary>
+    /* ==================== å†…éƒ¨å®ç°ï¼ˆä¸šåŠ¡ä»£ç ä¸éœ€è¦çœ‹ï¼‰ ==================== */
+
+    /// <summary>ç”± WebSocketClient è°ƒç”¨ï¼Œä¸šåŠ¡ä»£ç ä¸éœ€è¦ç”¨</summary>
+    public static void HandleAck(string json)
+    {
+        DownlinkAck ack;
+        try
+        {
+            ack = JsonUtility.FromJson<DownlinkAck>(json);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError("[Downlink] ack è§£æå¤±è´¥: " + e.Message + " | " + json);
+            return;
+        }
+
+        if (ack.ok)
+            Debug.Log("[Downlink] ack ok route=" + ack.route + " id=" + ack.requestId);
+        else
+            Debug.LogWarning("[Downlink] ack å¤±è´¥: " + ack.error + " id=" + ack.requestId);
+
+        if (OnAck != null) OnAck(ack);
+    }
+
+    /* ==================== å¯¹å¤–æ¥å£ï¼ˆä¸šåŠ¡åªç”¨è¿™ä¸¤ä¸ªï¼‰ ==================== */
+
+    /// <summary>ä¸­é—´å±‚å›æ‰§ï¼ˆå·²è·¯ç”± / è®¾å¤‡ç¦»çº¿ / å‚æ•°é”™è¯¯ï¼‰</summary>
     public static event Action<DownlinkAck> OnAck;
 
     /// <summary>
-    /// ·¢ËÍÒ»Ìõ¿ØÖÆÃüÁî
+    /// å‘é€ä¸€æ¡æ§åˆ¶å‘½ä»¤
     /// </summary>
-    /// <param name="deviceId">Éè±¸ºÅ 1-999</param>
-    /// <param name="port">½Ó¿Ú 1-3£¨1=DATA 2=I2C 3=UART2£©</param>
-    /// <param name="code">Ö¸Áî 0-99999£¬ÓïÒåÓÉÖ´ĞĞÆ÷¾ö¶¨</param>
-    /// <returns>true = ÒÑ½»¸øÖĞ¼ä²ã£¨²»´ú±íÉè±¸ÒÑÖ´ĞĞ£©</returns>
+    /// <param name="deviceId">è®¾å¤‡å· 1-999</param>
+    /// <param name="port">æ¥å£ 1-3ï¼ˆ1=DATA 2=I2C 3=UART2ï¼‰</param>
+    /// <param name="code">æŒ‡ä»¤ 0-99999ï¼Œè¯­ä¹‰ç”±æ‰§è¡Œå™¨å†³å®š</param>
+    /// <returns>true = å·²äº¤ç»™ä¸­é—´å±‚ï¼ˆä¸ä»£è¡¨è®¾å¤‡å·²æ‰§è¡Œï¼‰</returns>
     public static bool SendCode(int deviceId, int port, int code)
     {
         if (deviceId < 1 || deviceId > 999)
         {
-            Debug.LogWarning("[Downlink] deviceId ±ØĞëÊÇ 1-999");
+            Debug.LogWarning("[Downlink] deviceId å¿…é¡»æ˜¯ 1-999");
             return false;
         }
         if (port < 1 || port > 3)
         {
-            Debug.LogWarning("[Downlink] port ±ØĞëÊÇ 1-3");
+            Debug.LogWarning("[Downlink] port å¿…é¡»æ˜¯ 1-3");
             return false;
         }
         if (code < 0 || code > 99999)
         {
-            Debug.LogWarning("[Downlink] code ±ØĞëÊÇ 0-99999");
+            Debug.LogWarning("[Downlink] code å¿…é¡»æ˜¯ 0-99999");
             return false;
         }
 
@@ -67,33 +93,11 @@ public static class Downlink
 
         if (!WebSocketClient.SendText(json))
         {
-            Debug.LogWarning("[Downlink] Î´Á¬½ÓÖĞ¼ä²ã£¬ÃüÁîÎ´·¢ËÍ");
+            Debug.LogWarning("[Downlink] æœªè¿æ¥ä¸­é—´å±‚ï¼Œå‘½ä»¤æœªå‘é€");
             return false;
         }
 
-        Debug.Log("[Downlink] ÒÑ·¢ËÍ Éè±¸" + deviceId + " ½Ó¿Ú" + port + " Ö¸Áî" + code.ToString("D5"));
+        Debug.Log("[Downlink] å·²å‘é€ è®¾å¤‡" + deviceId + " æ¥å£" + port + " æŒ‡ä»¤" + code.ToString("D5"));
         return true;
-    }
-
-    /// <summary>ÓÉ WebSocketClient µ÷ÓÃ£¬ÒµÎñ´úÂë²»ĞèÒªÓÃ</summary>
-    public static void HandleAck(string json)
-    {
-        DownlinkAck ack;
-        try
-        {
-            ack = JsonUtility.FromJson<DownlinkAck>(json);
-        }
-        catch (Exception e)
-        {
-            Debug.LogError("[Downlink] ack ½âÎöÊ§°Ü: " + e.Message + " | " + json);
-            return;
-        }
-
-        if (ack.ok)
-            Debug.Log("[Downlink] ack ok route=" + ack.route + " id=" + ack.requestId);
-        else
-            Debug.LogWarning("[Downlink] ack Ê§°Ü: " + ack.error + " id=" + ack.requestId);
-
-        if (OnAck != null) OnAck(ack);
     }
 }
